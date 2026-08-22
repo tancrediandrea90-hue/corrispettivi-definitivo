@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Corrispettivi Giornalieri</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --blue:#1a5cb0; --blue-dark:#0d3d7a; --gray-bg:#f4f6f8; --border:#d7dce1;
+    --ok:#2e8b57; --warn:#c0392b; --amber:#e67e22;
+  }
+  *{box-sizing:border-box;}
+  body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:var(--gray-bg);color:#1c2733;}
+  header{background:var(--blue-dark);color:#fff;padding:16px 20px;}
+  header h1{margin:0;font-size:19px;}
+  header p{margin:4px 0 0;font-size:12.5px;opacity:.85;}
+  .wrap{max-width:760px;margin:0 auto;padding:14px;}
+  .card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px;}
+  .card h2{font-size:15px;margin:0 0 12px;color:var(--blue-dark);}
+  .row{display:flex;gap:10px;flex-wrap:wrap;}
+  .row > div{flex:1;min-width:120px;}
+  label{display:block;font-size:12.5px;color:#51606f;margin-bottom:4px;font-weight:600;}
+  input[type=text],input[type=number],input[type=date],input[type=password],select{
+    width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:7px;font-size:14.5px;background:#fff;
+  }
+  input[readonly]{background:#f0f2f4;color:#556;}
+  .cassa-block{border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;}
+  .cassa-title{font-weight:700;font-size:14.5px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;}
+  .status{font-size:11.5px;padding:2px 8px;border-radius:20px;background:#eee;color:#666;}
+  .status.done{background:#e3f3ea;color:var(--ok);}
+  .status.busy{background:#fdf3e3;color:var(--amber);}
+  .status.err{background:#fbe6e5;color:var(--warn);}
+  .filebtn{display:inline-block;background:var(--blue);color:#fff;padding:9px 14px;border-radius:7px;font-size:13.5px;font-weight:600;cursor:pointer;border:none;}
+  .filebtn:active{background:var(--blue-dark);}
+  input[type=file]{display:none;}
+  .thumb{width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid var(--border);margin-left:8px;vertical-align:middle;}
+  .fields{margin-top:12px;display:none;}
+  .fields.show{display:block;}
+  .grid6{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;}
+  .grid6 .full{grid-column:1/-1;}
+  .mini-label{font-size:11px;color:#7a8894;margin-bottom:2px;}
+  .alert{background:#fbe6e5;color:var(--warn);border:1px solid #f0c4c1;border-radius:7px;padding:8px 10px;font-size:12.5px;margin-top:8px;}
+  .divider{border:none;border-top:1px solid var(--border);margin:10px 0;}
+  .btn-main{width:100%;padding:13px;background:var(--blue);color:#fff;border:none;border-radius:9px;font-size:15px;font-weight:700;cursor:pointer;margin-top:6px;}
+  .btn-main:disabled{background:#b7c3cd;}
+  .btn-secondary{width:100%;padding:12px;background:#fff;color:var(--blue);border:1.5px solid var(--blue);border-radius:9px;font-size:14.5px;font-weight:700;cursor:pointer;margin-top:8px;}
+  .summary-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:10px;}
+  .summary-table th,.summary-table td{border:1px solid var(--border);padding:5px 6px;text-align:right;}
+  .summary-table th:first-child,.summary-table td:first-child{text-align:left;}
+  .summary-table th{background:#eef2f6;font-size:11px;}
+  .total-row{font-weight:700;background:#f7f9fa;}
+  .cash-row{font-weight:700;color:var(--blue-dark);background:#eaf1fb;}
+  .hint{font-size:11.5px;color:#7a8894;margin-top:6px;}
+  #printArea{display:none;}
+  @media print{
+    body *{visibility:hidden;}
+    #printArea, #printArea *{visibility:visible;}
+    #printArea{display:block;position:absolute;left:0;top:0;width:100%;}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Corrispettivi Giornalieri</h1>
+  <p>Carica le 3 chiusure cassa (foto o PDF) → AI Cloud Vision → genera Excel/PDF</p>
+</header>
+
+<div class="wrap">
+
+  <div class="card">
+    <h2>Configurazione API</h2>
+    <div class="row">
+      <div style="flex:2;">
+        <label>Google Gemini API Key</label>
+        <input type="password" id="apiKey" placeholder="Incolla qui la tua API Key (AIzaSy...)">
+      </div>
+      <div>
+        <label>Modello AI</label>
+        <select id="selectedModel">
+          <option value="gemini-3.6-flash" selected>Gemini 3.6 Flash</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Dati farmacia</h2>
+    <div class="row">
+      <div>
+        <label>Farmacia N°</label>
+        <input type="text" id="farmaciaN" value="2">
+      </div>
+      <div>
+        <label>Data</label>
+        <input type="date" id="dataCorr">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Chiusure cassa</h2>
+    <div id="casseContainer"></div>
+  </div>
+
+  <div class="card">
+    <h2>Liquidazione Ricette ASL</h2>
+    <label>Importo (manuale, non presente sullo scontrino)</label>
+    <input type="number" step="0.01" id="liquidazioneAsl" value="0">
+  </div>
+
+  <div class="card">
+    <h2>Riepilogo</h2>
+    <div id="summaryContainer"><p class="hint">Completa l'elaborazione delle 3 casse per vedere il riepilogo.</p></div>
+    <button class="btn-main" id="btnGenExcel" disabled>Genera file Excel (.xlsx)</button>
+    <button class="btn-secondary" id="btnGenPdf" disabled>Genera PDF (stampa)</button>
+  </div>
+
+</div>
+
+<div id="printArea"></div>
+
+<script>
+/* ==================== CONFIG ==================== */
+const CASSE = [1, 2, 3];
+const FIELD_MAP = {
+  ricetteAsl: { label: "Ricette ASL", col: "C" },
+  covid5:     { label: "IVA 5% (Covid)", col: "E" },
+  esente:     { label: "Esente (IVA 0%)", col: "I" },
+  iva4:       { label: "IVA 4%", col: "J" },
+  iva10:      { label: "IVA 10%", col: "K" },
+  iva22:      { label: "IVA 22%", col: "L" }
+};
+const FIELD_ORDER = ["ricetteAsl", "esente", "iva4", "iva10", "iva22", "covid5"];
+
+let pdfjsLibPromise = null;
+function loadPdfjsLib() {
+  if (!pdfjsLibPromise) {
+    pdfjsLibPromise = import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.2.108/pdf.min.mjs").then(lib => {
+      lib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.2.108/pdf.worker.min.mjs";
+      return lib;
+    });
+  }
+  return pdfjsLibPromise;
+}
+
+/* ==================== STATE ==================== */
+const state = {
+  casse: CASSE.map(n => ({
+    n,
+    file: null,
+    previewBlob: null,
+    status: "idle",
+    errorMessage: "",
+    fields: { ricetteAsl: 0, esente: 0, iva4: 0, iva10: 0, iva22: 0, covid5: 0 },
+    totaleNetto: 0,
+    docVend: 0,
+    posTerminale: 0,
+    cartaCredito: null,
+    debugText: ""
+  }))
+};
+
+/* ==================== UTIL ==================== */
+function fmtEuro(v) {
+  return (v || 0).toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function isPdfFile(file) {
+  return !!file && (file.type === "application/pdf" || /\.pdf$/i.test(file.name || ""));
+}
+
+function imageOrBlobToPngBase64(blobOrFile) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blobOrFile);
+    img.onload = () => {
+      const maxDim = 2000;
+      let w = img.width;
+      let h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round(h * (maxDim / w));
+          w = maxDim;
+        } else {
+          w = Math.round(w * (maxDim / h));
+          h = maxDim;
+        }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      const dataUrl = canvas.toDataURL("image/png");
+      resolve(dataUrl.split(",")[1]);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Impossibile caricare l'immagine. Verifica il formato del file."));
+    };
+    img.src = url;
+  });
+}
+
+async function pdfFirstPageToBlob(file) {
+  const pdfjsLib = await loadPdfjsLib();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const page = await pdf.getPage(1);
+  const targetWidth = 2000;
+  const baseViewport = page.getViewport({ scale: 1 });
+  const scale = targetWidth / baseViewport.width;
+  const viewport = page.getViewport({ scale });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(viewport.width);
+  canvas.height = Math.round(viewport.height);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport }).promise;
+
+  return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png"));
+}
+
+/* ==================== CLOUD VISION (GEMINI API) ==================== */
+async function callGeminiApi(modelName, apiKey, base64Png, promptText) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{
+        parts: [
+          { text: promptText },
+          { inline_data: { mime_type: "image/png", data: base64Png } }
+        ]
+      }]
+    })
+  });
+  return response;
+}
+
+async function runCloudVisionForCassa(idx) {
+  const c = state.casse[idx];
+  const apiKey = document.getElementById("apiKey").value.trim();
+  let modelName = document.getElementById("selectedModel").value;
+
+  if (!apiKey) {
+    c.status = "err";
+    c.errorMessage = "Inserisci la tua Google Gemini API Key nel campo in alto.";
+    renderCasse();
+    return;
+  }
+
+  c.status = "busy";
+  c.errorMessage = "";
+  renderCasse();
+
+  try {
+    const sourceBlob = c.previewBlob || c.file;
+    const base64Png = await imageOrBlobToPngBase64(sourceBlob);
+
+    const promptText = `
+      Analizza la foto o la scansione della chiusura cassa di una farmacia ed estrai i seguenti dati contabili.
+      Restituisci ESCLUSIVAMENTE un oggetto JSON valido (senza blocchi markdown, senza testo di introduzione o spiegazioni) con questa struttura esatta:
+      {
+        "ricetteAsl": 0.00,
+        "covid5": 0.00,
+        "esente": 0.00,
+        "iva4": 0.00,
+        "iva10": 0.00,
+        "iva22": 0.00,
+        "totaleNetto": 0.00,
+        "docVend": 0,
+        "posTerminale": 0.00,
+        "cartaCredito": 0.00
+      }
+      Istruzioni di estrazione:
+      - iva10, iva22, covid5 (5%), esente (0%), iva4, ricetteAsl: inserisci il valore numerico del TOTALE NETTO corrispondente a ciascuna aliquota/reparto.
+      - totaleNetto: il totale netto complessivo della chiusura.
+      - docVend: il numero intero di documenti di vendita.
+      - posTerminale: il totale POS o totale host estratto dal report del terminale POS.
+      - cartaCredito: il valore per "Carta di Credito" o pagamenti elettronici dichiarato sul totale cassa.
+    `;
+
+    let response = await callGeminiApi(modelName, apiKey, base64Png, promptText);
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      const errDetail = data.error ? data.error.message : `Errore HTTP ${response.status}`;
+      throw new Error(`Google API: ${errDetail}`);
+    }
+
+    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+      throw new Error("Risposta incompleta da parte del server Google.");
+    }
+
+    const rawText = data.candidates[0].content.parts[0].text;
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("Impossibile interpretare la risposta dell'AI come formato JSON.");
+    }
+
+    const parsedData = JSON.parse(jsonMatch[0]);
+
+    c.fields.ricetteAsl = Number(parsedData.ricetteAsl) || 0;
+    c.fields.covid5     = Number(parsedData.covid5) || 0;
+    c.fields.esente     = Number(parsedData.esente) || 0;
+    c.fields.iva4       = Number(parsedData.iva4) || 0;
+    c.fields.iva10      = Number(parsedData.iva10) || 0;
+    c.fields.iva22      = Number(parsedData.iva22) || 0;
+
+    c.totaleNetto   = Number(parsedData.totaleNetto) || 0;
+    c.docVend       = parseInt(parsedData.docVend, 10) || 0;
+    c.posTerminale  = Number(parsedData.posTerminale) || 0;
+    c.cartaCredito  = parsedData.cartaCredito !== undefined && parsedData.cartaCredito !== null ? Number(parsedData.cartaCredito) : null;
+
+    c.debugText = JSON.stringify(parsedData, null, 2);
+    c.status = "done";
+  } catch (err) {
+    console.error("Errore elaborazione Cloud Vision:", err);
+    c.status = "err";
+    c.errorMessage = err.message || "Si è verificato un errore durante la lettura dell'immagine.";
+  }
+
+  renderCasse();
+  updateSummary();
+}
+
+function thumbHtml(c) {
+  if (c.previewBlob) {
+    return `<img class="thumb" src="${URL.createObjectURL(c.previewBlob)}">`;
+  }
+  if (isPdfFile(c.file)) {
+    return `<span class="thumb" style="display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#7a8894;background:#eef2f6;">PDF</span>`;
+  }
+  return `<img class="thumb" src="${URL.createObjectURL(c.file)}">`;
+}
+
+/* ==================== UI: CASSE ==================== */
+function renderCasse() {
+  const container = document.getElementById("casseContainer");
+  container.innerHTML = "";
+  state.casse.forEach((c, idx) => {
+    const block = document.createElement("div");
+    block.className = "cassa-block";
+
+    const statusClass = c.status === "done" ? "done" : c.status === "busy" ? "busy" : c.status === "err" ? "err" : "";
+    const statusText = { idle: "in attesa", busy: "elaborazione Cloud AI…", done: "estratto", err: "errore" }[c.status];
+
+    block.innerHTML = `
+      <div class="cassa-title">
+        <span>Cassa ${c.n}</span>
+        <span class="status ${statusClass}">${statusText}</span>
+      </div>
+      <label class="filebtn" for="file-${idx}">📎 ${c.file ? "Cambia file" : "Carica foto o PDF chiusura"}</label>
+      <input type="file" id="file-${idx}" accept="image/*,application/pdf" data-idx="${idx}">
+      ${c.file ? thumbHtml(c) : ""}
+      ${c.status === "err" ? `<div class="alert">⚠ ${c.errorMessage}</div>` : ""}
+      <div class="fields ${c.status === "done" || c.status === "err" ? "show" : ""}" id="fields-${idx}"></div>
+    `;
+    container.appendChild(block);
+
+    if (c.status === "done" || c.status === "err") {
+      renderFieldsForCassa(idx);
+    }
+  });
+
+  container.querySelectorAll("input[type=file]").forEach(inp => {
+    inp.addEventListener("change", async e => {
+      const idx = parseInt(e.target.dataset.idx, 10);
+      const file = e.target.files[0];
+      if (!file) return;
+      const c = state.casse[idx];
+      c.file = file;
+      c.previewBlob = null;
+
+      if (isPdfFile(file)) {
+        c.status = "busy";
+        renderCasse();
+        try {
+          c.previewBlob = await pdfFirstPageToBlob(file);
+        } catch (err) {
+          console.error(err);
+          c.status = "err";
+          c.errorMessage = "Impossibile elaborare il file PDF.";
+          renderCasse();
+          return;
+        }
+      }
+
+      renderCasse();
+      await runCloudVisionForCassa(idx);
+    });
+  });
+}
+
+function renderFieldsForCassa(idx) {
+  const c = state.casse[idx];
+  const el = document.getElementById(`fields-${idx}`);
+  if (!el) return;
+
+  let discrepancy = "";
+  if (c.cartaCredito !== null && Math.abs(c.cartaCredito - c.posTerminale) > 0.01) {
+    discrepancy = `<div class="alert">⚠ Il totale del terminale POS (€ ${fmtEuro(c.posTerminale)}) non coincide con "Carta di credito" dichiarato dalla cassa (€ ${fmtEuro(c.cartaCredito)}).</div>`;
+  }
+
+  el.innerHTML = `
+    <hr class="divider">
+    <div class="grid6">
+      ${FIELD_ORDER.map(k => `
+        <div>
+          <div class="mini-label">${FIELD_MAP[k].label}</div>
+          <input type="number" step="0.01" data-idx="${idx}" data-field="${k}" value="${c.fields[k]}">
+        </div>
+      `).join("")}
+      <div>
+        <div class="mini-label">Totale netto</div>
+        <input type="number" step="0.01" data-idx="${idx}" data-field="totaleNetto" value="${c.totaleNetto}">
+      </div>
+      <div>
+        <div class="mini-label">N. documenti vendita</div>
+        <input type="number" data-idx="${idx}" data-field="docVend" value="${c.docVend}">
+      </div>
+      <div class="full">
+        <div class="mini-label">Totale POS (terminale)</div>
+        <input type="number" step="0.01" data-idx="${idx}" data-field="posTerminale" value="${c.posTerminale}">
+      </div>
+    </div>
+    ${discrepancy}
+    <details style="margin-top:10px;">
+      <summary style="font-size:12px;color:#7a8894;cursor:pointer;">Mostra JSON estratto dall'AI (debug)</summary>
+      <pre style="font-size:10.5px;background:#f4f6f8;padding:8px;border-radius:6px;white-space:pre-wrap;max-height:220px;overflow:auto;">${(c.debugText || "").replace(/</g, "&lt;")}</pre>
+    </details>
+  `;
+
+  el.querySelectorAll("input[type=number]").forEach(inp => {
+    inp.addEventListener("input", e => {
+      const i = parseInt(e.target.dataset.idx, 10);
+      const field = e.target.dataset.field;
+      const val = parseFloat(e.target.value) || 0;
+      if (FIELD_ORDER.includes(field)) state.casse[i].fields[field] = val;
+      else state.casse[i][field] = val;
+      updateSummary();
+    });
+  });
+}
+
+/* ==================== SUMMARY ==================== */
+function updateSummary() {
+  const container = document.getElementById("summaryContainer");
+  const anyDone = state.casse.some(c => c.status === "done" || c.status === "err");
+  if (!anyDone) {
+    container.innerHTML = `<p class="hint">Completa l'elaborazione delle 3 casse per vedere il riepilogo.</p>`;
+    document.getElementById("btnGenExcel").disabled = true;
+    document.getElementById("btnGenPdf").disabled = true;
+    return;
+  }
+
+  const liquidazioneAsl = parseFloat(document.getElementById("liquidazioneAsl").value) || 0;
+  const totals = { ricetteAsl: 0, esente: 0, iva4: 0, iva10: 0, iva22: 0, covid5: 0, totaleNetto: 0, docVend: 0, posTerminale: 0 };
+  state.casse.forEach(c => {
+    FIELD_ORDER.forEach(k => totals[k] += c.fields[k] || 0);
+    totals.totaleNetto += c.totaleNetto || 0;
+    totals.docVend += c.docVend || 0;
+    totals.posTerminale += c.posTerminale || 0;
+  });
+  const contante = totals.totaleNetto - totals.posTerminale - liquidazioneAsl;
+
+  let rows = "";
+  state.casse.forEach(c => {
+    rows += `<tr><td>Cassa ${c.n}</td>${FIELD_ORDER.map(k => `<td>${fmtEuro(c.fields[k])}</td>`).join("")}<td>${fmtEuro(c.totaleNetto)}</td><td>${c.docVend}</td><td>${fmtEuro(c.posTerminale)}</td></tr>`;
+  });
+
+  container.innerHTML = `
+    <table class="summary-table">
+      <thead><tr><th>Cassa</th>${FIELD_ORDER.map(k => `<th>${FIELD_MAP[k].label}</th>`).join("")}<th>Totale</th><th>Doc.</th><th>POS</th></tr></thead>
+      <tbody>
+        ${rows}
+        <tr class="total-row"><td>TOTALE</td>${FIELD_ORDER.map(k => `<td>${fmtEuro(totals[k])}</td>`).join("")}<td>${fmtEuro(totals.totaleNetto)}</td><td>${totals.docVend}</td><td>${fmtEuro(totals.posTerminale)}</td></tr>
+      </tbody>
+    </table>
+    <table class="summary-table" style="margin-top:8px;">
+      <tr><td>Liquidazione Ricette ASL</td><td>€ ${fmtEuro(liquidazioneAsl)}</td></tr>
+      <tr class="cash-row"><td>CONTANTE DA VERSARE</td><td>€ ${fmtEuro(contante)}</td></tr>
+    </table>
+  `;
+
+  const allDone = state.casse.every(c => c.status === "done" || c.status === "err");
+  document.getElementById("btnGenExcel").disabled = !allDone;
+  document.getElementById("btnGenPdf").disabled = !allDone;
+}
+
+/* ==================== EXPORT EXCEL ==================== */
+function generateExcel() {
+  const farmaciaN = document.getElementById("farmaciaN").value || "";
+  const dataVal = document.getElementById("dataCorr").value || todayISO();
+  const liquidazioneAsl = parseFloat(document.getElementById("liquidazioneAsl").value) || 0;
+
+  const wsData = [];
+  for (let r = 0; r < 24; r++) wsData.push([]);
+
+  wsData[2][6] = "CORRISPETTIVI DEL GIORNO";
+  wsData[8][1] = "FARMACIA N°"; wsData[8][2] = farmaciaN;
+  wsData[9][1] = "DATA"; wsData[9][2] = dataVal;
+
+  const headers = ["", "Ricette ASL", "IVA 0% COVID", "IVA 5% COVID", "IVA 22% EST.", "IVA SERV. 22%", "IVA 0% LIBRI", "IVA 0%", "IVA 4%", "IVA 10%", "IVA 22%", "TOTALE", "doc vend"];
+  headers.forEach((h, i) => { if (h) wsData[12][i + 1] = h; });
+
+  const colIdx = { ricetteAsl: 2, covid5: 4, esente: 8, iva4: 9, iva10: 10, iva22: 11 };
+
+  state.casse.forEach((c, i) => {
+    const row = 13 + i;
+    wsData[row][1] = `CHIUSURA Cassa ${c.n}`;
+    FIELD_ORDER.forEach(k => { wsData[row][colIdx[k]] = c.fields[k] || 0; });
+    wsData[row][12] = { f: `SUM(C${row + 1}:L${row + 1})` };
+    wsData[row][13] = c.docVend || 0;
+  });
+
+  wsData[16][1] = "TOTALE CORRISPETTIVI";
+  ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"].forEach(col => {
+    wsData[16][XLSX.utils.decode_col(col)] = { f: `SUM(${col}14:${col}16)` };
+  });
+
+  wsData[17][7] = state.casse[0].posTerminale || 0;
+  wsData[17][8] = state.casse[1].posTerminale || 0;
+  wsData[17][9] = state.casse[2].posTerminale || 0;
+  wsData[17][12] = { f: "SUM(H18:L18)" };
+  wsData[17][13] = "POS";
+
+  wsData[18][7] = "POS1"; wsData[18][8] = "POS2"; wsData[18][9] = "POS3";
+  wsData[18][12] = { f: "M17-M18-C23" };
+  wsData[18][13] = "CONTANTI";
+
+  wsData[22][1] = "LIQUIDAZIONE RIC. ASL";
+  wsData[22][2] = liquidazioneAsl;
+
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws["!cols"] = [{ wch: 3 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 10 }, { wch: 9 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "corrispettivi");
+  const fname = `Corrispettivi_${dataVal}.xlsx`;
+  XLSX.writeFile(wb, fname);
+}
+
+/* ==================== EXPORT PDF ==================== */
+function generatePdf() {
+  const farmaciaN = document.getElementById("farmaciaN").value || "";
+  const dataVal = document.getElementById("dataCorr").value || todayISO();
+  const liquidazioneAsl = parseFloat(document.getElementById("liquidazioneAsl").value) || 0;
+
+  const totals = { ricetteAsl: 0, esente: 0, iva4: 0, iva10: 0, iva22: 0, covid5: 0, totaleNetto: 0, docVend: 0, posTerminale: 0 };
+  state.casse.forEach(c => {
+    FIELD_ORDER.forEach(k => totals[k] += c.fields[k] || 0);
+    totals.totaleNetto += c.totaleNetto || 0;
+    totals.docVend += c.docVend || 0;
+    totals.posTerminale += c.posTerminale || 0;
+  });
+  const contante = totals.totaleNetto - totals.posTerminale - liquidazioneAsl;
+
+  let rows = "";
+  state.casse.forEach(c => {
+    rows += `<tr><td>Cassa ${c.n}</td>${FIELD_ORDER.map(k => `<td>${fmtEuro(c.fields[k])}</td>`).join("")}<td>${fmtEuro(c.totaleNetto)}</td><td>${c.docVend}</td><td>${fmtEuro(c.posTerminale)}</td></tr>`;
+  });
+
+  const printArea = document.getElementById("printArea");
+  printArea.innerHTML = `
+    <div style="font-family:Arial,sans-serif;padding:20px;">
+      <h2>CORRISPETTIVI DEL GIORNO</h2>
+      <p>Farmacia N° ${farmaciaN} — Data: ${dataVal}</p>
+      <table border="1" cellpadding="5" style="border-collapse:collapse;width:100%;font-size:12px;">
+        <thead><tr><th>Cassa</th>${FIELD_ORDER.map(k => `<th>${FIELD_MAP[k].label}</th>`).join("")}<th>Totale</th><th>Doc.</th><th>POS</th></tr></thead>
+        <tbody>
+          ${rows}
+          <tr style="font-weight:bold;"><td>TOTALE</td>${FIELD_ORDER.map(k => `<td>${fmtEuro(totals[k])}</td>`).join("")}<td>${fmtEuro(totals.totaleNetto)}</td><td>${fmtEuro(totals.posTerminale)}</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top:16px;">Liquidazione Ricette ASL: € ${fmtEuro(liquidazioneAsl)}</p>
+      <p style="font-size:16px;font-weight:bold;">CONTANTE DA VERSARE: € ${fmtEuro(contante)}</p>
+      <p style="margin-top:40px;">Timbro e firma: _______________________</p>
+    </div>
+  `;
+  window.print();
+}
+
+/* ==================== INIT ==================== */
+document.getElementById("dataCorr").value = todayISO();
+const savedKey = localStorage.getItem("gemini_api_key") || "";
+document.getElementById("apiKey").value = savedKey;
+document.getElementById("apiKey").addEventListener("input", e => {
+  localStorage.setItem("gemini_api_key", e.target.value.trim());
+});
+
+document.getElementById("liquidazioneAsl").addEventListener("input", updateSummary);
+document.getElementById("btnGenExcel").addEventListener("click", generateExcel);
+document.getElementById("btnGenPdf").addEventListener("click", generatePdf);
+renderCasse();
+
+</script>
+</body>
+</html>
