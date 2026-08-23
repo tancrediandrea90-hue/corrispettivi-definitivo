@@ -33,6 +33,7 @@
   .status.err{background:#fbe6e5;color:var(--warn);}
   .filebtn{display:inline-block;background:var(--blue);color:#fff;padding:9px 14px;border-radius:7px;font-size:13.5px;font-weight:600;cursor:pointer;border:none;}
   .filebtn:active{background:var(--blue-dark);}
+  .filebtn.secondary{background:#fff;color:var(--blue);border:1px solid var(--blue);}
   input[type=file]{display:none;}
   .thumb{width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid var(--border);margin-left:8px;vertical-align:middle;}
   .fields{margin-top:12px;display:none;}
@@ -70,7 +71,7 @@
 <div class="wrap">
 
   <div class="card">
-    <h2>Configurazione API</h2>
+    <h2>Configurazione API & Modello Excel</h2>
     <div class="row">
       <div style="flex:2;">
         <label>Google Gemini API Key</label>
@@ -81,6 +82,14 @@
         <select id="selectedModel">
           <option value="gemini-3.6-flash" selected>Gemini 3.6 Flash</option>
         </select>
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      <label>Modello Excel Personalizzato (CORRISPETTIVI.xlsx)</label>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <label class="filebtn secondary" for="templateFile">📁 Carica modello CORRISPETTIVI.xlsx</label>
+        <input type="file" id="templateFile" accept=".xlsx,.xls">
+        <span id="templateStatus" class="hint">Ricerca modello locale CORRISPETTIVI.xlsx...</span>
       </div>
     </div>
   </div>
@@ -134,7 +143,9 @@ const FIELD_MAP = {
 };
 const FIELD_ORDER = ["ricetteAsl", "esente", "iva4", "iva10", "iva22", "covid5"];
 
+let customTemplateBuffer = null;
 let pdfjsLibPromise = null;
+
 function loadPdfjsLib() {
   if (!pdfjsLibPromise) {
     pdfjsLibPromise = import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.2.108/pdf.min.mjs").then(lib => {
@@ -502,57 +513,128 @@ function updateSummary() {
   document.getElementById("btnGenPdf").disabled = !allDone;
 }
 
+/* ==================== EXCEL TEMPLATE ENGINE ==================== */
+async function loadInitialTemplate() {
+  const statusEl = document.getElementById("templateStatus");
+  try {
+    const res = await fetch("CORRISPETTIVI.xlsx");
+    if (res.ok) {
+      customTemplateBuffer = await res.arrayBuffer();
+      statusEl.textContent = "✔ Modello CORRISPETTIVI.xlsx caricato automaticamente";
+      statusEl.style.color = "var(--ok)";
+    } else {
+      statusEl.textContent = "ℹ Modello standard (generazione automatica attivata)";
+    }
+  } catch (e) {
+    statusEl.textContent = "ℹ Modello standard (generazione automatica attivata)";
+  }
+}
+
+document.getElementById("templateFile").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  const statusEl = document.getElementById("templateStatus");
+  if (!file) return;
+  try {
+    customTemplateBuffer = await file.arrayBuffer();
+    statusEl.textContent = `✔ Modello caricato: ${file.name}`;
+    statusEl.style.color = "var(--ok)";
+  } catch (err) {
+    statusEl.textContent = "⚠ Errore durante il caricamento del file template.";
+    statusEl.style.color = "var(--warn)";
+  }
+});
+
 /* ==================== EXPORT EXCEL ==================== */
-function generateExcel() {
+async function generateExcel() {
   const farmaciaN = document.getElementById("farmaciaN").value || "";
   const dataVal = document.getElementById("dataCorr").value || todayISO();
   const liquidazioneAsl = parseFloat(document.getElementById("liquidazioneAsl").value) || 0;
 
-  const wsData = [];
-  for (let r = 0; r < 24; r++) wsData.push([]);
+  let wb;
+  if (customTemplateBuffer) {
+    wb = XLSX.read(customTemplateBuffer, { type: "array", cellStyles: true, cellFormulas: true });
+  }
 
-  wsData[2][6] = "CORRISPETTIVI DEL GIORNO";
-  wsData[8][1] = "FARMACIA N°"; wsData[8][2] = farmaciaN;
-  wsData[9][1] = "DATA"; wsData[9][2] = dataVal;
+  if (wb && wb.SheetNames.length > 0) {
+    const sheetName = wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
 
-  const headers = ["", "Ricette ASL", "IVA 0% COVID", "IVA 5% COVID", "IVA 22% EST.", "IVA SERV. 22%", "IVA 0% LIBRI", "IVA 0%", "IVA 4%", "IVA 10%", "IVA 22%", "TOTALE", "doc vend"];
-  headers.forEach((h, i) => { if (h) wsData[12][i + 1] = h; });
+    // Inserimento intestazione dati
+    ws["C9"] = { t: "s", v: String(farmaciaN) };
+    ws["C10"] = { t: "s", v: dataVal };
 
-  const colIdx = { ricetteAsl: 2, covid5: 4, esente: 8, iva4: 9, iva10: 10, iva22: 11 };
+    // Mappatura colonne per cassa
+    const colMap = { ricetteAsl: "C", covid5: "E", esente: "I", iva4: "J", iva10: "K", iva22: "L" };
 
-  state.casse.forEach((c, i) => {
-    const row = 13 + i;
-    wsData[row][1] = `CHIUSURA Cassa ${c.n}`;
-    FIELD_ORDER.forEach(k => { wsData[row][colIdx[k]] = c.fields[k] || 0; });
-    wsData[row][12] = { f: `SUM(C${row + 1}:L${row + 1})` };
-    wsData[row][13] = c.docVend || 0;
-  });
+    state.casse.forEach((c, idx) => {
+      const row = 14 + idx;
+      FIELD_ORDER.forEach(k => {
+        const col = colMap[k];
+        if (col) {
+          ws[`${col}${row}`] = { t: "n", v: c.fields[k] || 0 };
+        }
+      });
+      ws[`M${row}`] = { t: "n", f: `SUM(C${row}:L${row})` };
+      ws[`N${row}`] = { t: "n", v: c.docVend || 0 };
+    });
 
-  wsData[16][1] = "TOTALE CORRISPETTIVI";
-  ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"].forEach(col => {
-    wsData[16][XLSX.utils.decode_col(col)] = { f: `SUM(${col}14:${col}16)` };
-  });
+    // POS e Totali
+    ws["H18"] = { t: "n", v: state.casse[0].posTerminale || 0 };
+    ws["I18"] = { t: "n", v: state.casse[1].posTerminale || 0 };
+    ws["J18"] = { t: "n", v: state.casse[2].posTerminale || 0 };
+    ws["M18"] = { t: "n", f: "SUM(H18:L18)" };
 
-  wsData[17][7] = state.casse[0].posTerminale || 0;
-  wsData[17][8] = state.casse[1].posTerminale || 0;
-  wsData[17][9] = state.casse[2].posTerminale || 0;
-  wsData[17][12] = { f: "SUM(H18:L18)" };
-  wsData[17][13] = "POS";
+    ws["C23"] = { t: "n", v: liquidazioneAsl };
+    ws["M19"] = { t: "n", f: "M17-M18-C23" };
 
-  wsData[18][7] = "POS1"; wsData[18][8] = "POS2"; wsData[18][9] = "POS3";
-  wsData[18][12] = { f: "M17-M18-C23" };
-  wsData[18][13] = "CONTANTI";
+    XLSX.writeFile(wb, `Corrispettivi_${dataVal}.xlsx`);
+  } else {
+    // Generazione dinamica completa se il template non è presente
+    const wsData = [];
+    for (let r = 0; r < 24; r++) wsData.push([]);
 
-  wsData[22][1] = "LIQUIDAZIONE RIC. ASL";
-  wsData[22][2] = liquidazioneAsl;
+    wsData[2][6] = "CORRISPETTIVI DEL GIORNO";
+    wsData[8][1] = "FARMACIA N°"; wsData[8][2] = farmaciaN;
+    wsData[9][1] = "DATA"; wsData[9][2] = dataVal;
 
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-  ws["!cols"] = [{ wch: 3 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 10 }, { wch: 9 }];
+    const headers = ["", "Ricette ASL", "IVA 0% COVID", "IVA 5% COVID", "IVA 22% EST.", "IVA SERV. 22%", "IVA 0% LIBRI", "IVA 0%", "IVA 4%", "IVA 10%", "IVA 22%", "TOTALE", "doc vend"];
+    headers.forEach((h, i) => { if (h) wsData[12][i + 1] = h; });
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "corrispettivi");
-  const fname = `Corrispettivi_${dataVal}.xlsx`;
-  XLSX.writeFile(wb, fname);
+    const colIdx = { ricetteAsl: 2, covid5: 4, esente: 8, iva4: 9, iva10: 10, iva22: 11 };
+
+    state.casse.forEach((c, i) => {
+      const row = 13 + i;
+      wsData[row][1] = `CHIUSURA Cassa ${c.n}`;
+      FIELD_ORDER.forEach(k => { wsData[row][colIdx[k]] = c.fields[k] || 0; });
+      wsData[row][12] = { f: `SUM(C${row + 1}:L${row + 1})` };
+      wsData[row][13] = c.docVend || 0;
+    });
+
+    wsData[16][1] = "TOTALE CORRISPETTIVI";
+    ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"].forEach(col => {
+      wsData[16][XLSX.utils.decode_col(col)] = { f: `SUM(${col}14:${col}16)` };
+    });
+
+    wsData[17][7] = state.casse[0].posTerminale || 0;
+    wsData[17][8] = state.casse[1].posTerminale || 0;
+    wsData[17][9] = state.casse[2].posTerminale || 0;
+    wsData[17][12] = { f: "SUM(H18:L18)" };
+    wsData[17][13] = "POS";
+
+    wsData[18][7] = "POS1"; wsData[18][8] = "POS2"; wsData[18][9] = "POS3";
+    wsData[18][12] = { f: "M17-M18-C23" };
+    wsData[18][13] = "CONTANTI";
+
+    wsData[22][1] = "LIQUIDAZIONE RIC. ASL";
+    wsData[22][2] = liquidazioneAsl;
+
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws["!cols"] = [{ wch: 3 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 10 }, { wch: 9 }];
+
+    const newWb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(newWb, ws, "corrispettivi");
+    XLSX.writeFile(newWb, `Corrispettivi_${dataVal}.xlsx`);
+  }
 }
 
 /* ==================== EXPORT PDF ==================== */
@@ -606,7 +688,9 @@ document.getElementById("apiKey").addEventListener("input", e => {
 document.getElementById("liquidazioneAsl").addEventListener("input", updateSummary);
 document.getElementById("btnGenExcel").addEventListener("click", generateExcel);
 document.getElementById("btnGenPdf").addEventListener("click", generatePdf);
+
 renderCasse();
+loadInitialTemplate();
 
 </script>
 </body>
