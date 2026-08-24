@@ -65,13 +65,13 @@
 
 <header>
   <h1>Corrispettivi Giornalieri</h1>
-  <p>Carica le 3 chiusure cassa (foto o PDF) → AI Cloud Vision → genera Excel/PDF</p>
+  <p>Carica le 3 chiusure cassa (foto o PDF) → AI Cloud Vision → genera Excel/ODS/PDF</p>
 </header>
 
 <div class="wrap">
 
   <div class="card">
-    <h2>Configurazione API & Modello Excel</h2>
+    <h2>Configurazione API & Modello Modello</h2>
     <div class="row">
       <div style="flex:2;">
         <label>Google Gemini API Key</label>
@@ -80,16 +80,16 @@
       <div>
         <label>Modello AI</label>
         <select id="selectedModel">
-          <option value="gemini-3.6-flash" selected>Gemini 3.6 Flash</option>
+          <option value="gemini-2.5-flash" selected>Gemini 2.5 Flash</option>
         </select>
       </div>
     </div>
     <div style="margin-top:12px;">
-      <label>Modello Excel Personalizzato (CORRISPETTIVI.xlsx)</label>
+      <label>Modello Personalizzato (CORRISPETTIVI.ods / CORRISPETTIVI.xlsx)</label>
       <div style="display:flex;align-items:center;gap:10px;">
-        <label class="filebtn secondary" for="templateFile">📁 Carica modello CORRISPETTIVI.xlsx</label>
-        <input type="file" id="templateFile" accept=".xlsx,.xls">
-        <span id="templateStatus" class="hint">Ricerca modello locale CORRISPETTIVI.xlsx...</span>
+        <label class="filebtn secondary" for="templateFile">📁 Carica modello CORRISPETTIVI</label>
+        <input type="file" id="templateFile" accept=".ods,.xlsx,.xls">
+        <span id="templateStatus" class="hint">Ricerca modello locale CORRISPETTIVI...</span>
       </div>
     </div>
   </div>
@@ -122,7 +122,7 @@
   <div class="card">
     <h2>Riepilogo</h2>
     <div id="summaryContainer"><p class="hint">Completa l'elaborazione delle 3 casse per vedere il riepilogo.</p></div>
-    <button class="btn-main" id="btnGenExcel" disabled>Genera file Excel (.xlsx)</button>
+    <button class="btn-main" id="btnGenExcel" disabled>Genera file Corrispettivi (.xlsx)</button>
     <button class="btn-secondary" id="btnGenPdf" disabled>Genera PDF (stampa)</button>
   </div>
 
@@ -243,6 +243,17 @@ async function pdfFirstPageToBlob(file) {
   return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png"));
 }
 
+function setCell(ws, cellRef, val, type = "n", formula = null) {
+  if (!ws[cellRef]) ws[cellRef] = {};
+  ws[cellRef].t = type;
+  if (formula) {
+    ws[cellRef].f = formula;
+  } else {
+    ws[cellRef].v = val;
+    delete ws[cellRef].f;
+  }
+}
+
 /* ==================== CLOUD VISION (GEMINI API) ==================== */
 async function callGeminiApi(modelName, apiKey, base64Png, promptText) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
@@ -305,7 +316,6 @@ async function runCloudVisionForCassa(idx) {
     `;
 
     let response = await callGeminiApi(modelName, apiKey, base64Png, promptText);
-
     const data = await response.json();
 
     if (!response.ok) {
@@ -513,21 +523,22 @@ function updateSummary() {
   document.getElementById("btnGenPdf").disabled = !allDone;
 }
 
-/* ==================== EXCEL TEMPLATE ENGINE ==================== */
+/* ==================== TEMPLATE ENGINE ==================== */
 async function loadInitialTemplate() {
   const statusEl = document.getElementById("templateStatus");
-  try {
-    const res = await fetch("CORRISPETTIVI.xlsx");
-    if (res.ok) {
-      customTemplateBuffer = await res.arrayBuffer();
-      statusEl.textContent = "✔ Modello CORRISPETTIVI.xlsx caricato automaticamente";
-      statusEl.style.color = "var(--ok)";
-    } else {
-      statusEl.textContent = "ℹ Modello standard (generazione automatica attivata)";
-    }
-  } catch (e) {
-    statusEl.textContent = "ℹ Modello standard (generazione automatica attivata)";
+  const candidates = ["CORRISPETTIVI.ods", "CORRISPETTIVI.xlsx"];
+  for (const name of candidates) {
+    try {
+      const res = await fetch(name);
+      if (res.ok) {
+        customTemplateBuffer = await res.arrayBuffer();
+        statusEl.textContent = `✔ Modello ${name} caricato automaticamente`;
+        statusEl.style.color = "var(--ok)";
+        return;
+      }
+    } catch (e) {}
   }
+  statusEl.textContent = "ℹ Modello standard (generazione automatica attivata)";
 }
 
 document.getElementById("templateFile").addEventListener("change", async e => {
@@ -544,7 +555,7 @@ document.getElementById("templateFile").addEventListener("change", async e => {
   }
 });
 
-/* ==================== EXPORT EXCEL ==================== */
+/* ==================== EXPORT EXCEL / ODS ==================== */
 async function generateExcel() {
   const farmaciaN = document.getElementById("farmaciaN").value || "";
   const dataVal = document.getElementById("dataCorr").value || todayISO();
@@ -559,37 +570,35 @@ async function generateExcel() {
     const sheetName = wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
 
-    // Inserimento intestazione dati
-    ws["C9"] = { t: "s", v: String(farmaciaN) };
-    ws["C10"] = { t: "s", v: dataVal };
+    // Inserimento intestazione
+    setCell(ws, "C9", String(farmaciaN), "s");
+    setCell(ws, "C10", dataVal, "s");
 
-    // Mappatura colonne per cassa
+    // Mappatura colonne casse (Cassa 1 -> Riga 14, Cassa 2 -> Riga 15, Cassa 3 -> Riga 16)
     const colMap = { ricetteAsl: "C", covid5: "E", esente: "I", iva4: "J", iva10: "K", iva22: "L" };
 
     state.casse.forEach((c, idx) => {
       const row = 14 + idx;
       FIELD_ORDER.forEach(k => {
         const col = colMap[k];
-        if (col) {
-          ws[`${col}${row}`] = { t: "n", v: c.fields[k] || 0 };
-        }
+        if (col) setCell(ws, `${col}${row}`, c.fields[k] || 0, "n");
       });
-      ws[`M${row}`] = { t: "n", f: `SUM(C${row}:L${row})` };
-      ws[`N${row}`] = { t: "n", v: c.docVend || 0 };
+      setCell(ws, `M${row}`, 0, "n", `SUM(C${row}:L${row})`);
+      setCell(ws, `N${row}`, c.docVend || 0, "n");
     });
 
-    // POS e Totali
-    ws["H18"] = { t: "n", v: state.casse[0].posTerminale || 0 };
-    ws["I18"] = { t: "n", v: state.casse[1].posTerminale || 0 };
-    ws["J18"] = { t: "n", v: state.casse[2].posTerminale || 0 };
-    ws["M18"] = { t: "n", f: "SUM(H18:L18)" };
+    // Mappatura POS per cassa e Liquidazione ASL
+    setCell(ws, "H18", state.casse[0].posTerminale || 0, "n");
+    setCell(ws, "I18", state.casse[1].posTerminale || 0, "n");
+    setCell(ws, "J18", state.casse[2].posTerminale || 0, "n");
+    setCell(ws, "M18", 0, "n", "SUM(H18:L18)");
 
-    ws["C23"] = { t: "n", v: liquidazioneAsl };
-    ws["M19"] = { t: "n", f: "M17-M18-C23" };
+    setCell(ws, "C23", liquidazioneAsl, "n");
+    setCell(ws, "M19", 0, "n", "M17-M18-C23");
 
     XLSX.writeFile(wb, `Corrispettivi_${dataVal}.xlsx`);
   } else {
-    // Generazione dinamica completa se il template non è presente
+    // Generazione da zero
     const wsData = [];
     for (let r = 0; r < 24; r++) wsData.push([]);
 
