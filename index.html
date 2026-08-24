@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Corrispettivi Giornalieri</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
   :root{
     --blue:#1a5cb0; --blue-dark:#0d3d7a; --gray-bg:#f4f6f8; --border:#d7dce1;
@@ -65,7 +65,7 @@
 
 <header>
   <h1>Corrispettivi Giornalieri</h1>
-  <p>Carica le 3 chiusure cassa (foto o PDF) → AI Cloud Vision → genera Excel/ODS/PDF</p>
+  <p>Carica le 3 chiusure cassa (foto o PDF) → AI Cloud Vision → compila il modello CORRISPETTIVI.xlsx</p>
 </header>
 
 <div class="wrap">
@@ -85,10 +85,10 @@
       </div>
     </div>
     <div style="margin-top:12px;">
-      <label>Modello Personalizzato (CORRISPETTIVI.ods / CORRISPETTIVI.xlsx)</label>
+      <label>Modello Excel (CORRISPETTIVI.xlsx)</label>
       <div style="display:flex;align-items:center;gap:10px;">
         <label class="filebtn secondary" for="templateFile">📁 Carica modello CORRISPETTIVI</label>
-        <input type="file" id="templateFile" accept=".ods,.xlsx,.xls">
+        <input type="file" id="templateFile" accept=".xlsx">
         <span id="templateStatus" class="hint">Ricerca modello locale CORRISPETTIVI...</span>
       </div>
     </div>
@@ -561,88 +561,132 @@ async function generateExcel() {
   const dataVal = document.getElementById("dataCorr").value || todayISO();
   const liquidazioneAsl = parseFloat(document.getElementById("liquidazioneAsl").value) || 0;
 
-  let wb;
-  if (customTemplateBuffer) {
-    wb = XLSX.read(customTemplateBuffer, { type: "array", cellStyles: true, cellFormulas: true });
+  if (!customTemplateBuffer) {
+    alert("Carica prima il file CORRISPETTIVI.xlsx da usare come modello.");
+    return;
   }
 
-  if (wb && wb.SheetNames.length > 0) {
-    const sheetName = wb.SheetNames[0];
-    const ws = wb.Sheets[sheetName];
+  try {
+    // Carica il modello originale con ExcelJS, mantenendo formattazione,
+    // larghezze colonne, celle unite, formule e struttura del foglio.
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(customTemplateBuffer);
 
-    // Inserimento intestazione
-    setCell(ws, "C9", String(farmaciaN), "s");
-    setCell(ws, "C10", dataVal, "s");
+    const ws = workbook.getWorksheet("CORRISPETTIVO") || workbook.worksheets[0];
+    if (!ws) {
+      throw new Error("Nel file modello non è presente un foglio utilizzabile.");
+    }
 
-    // Mappatura colonne casse (Cassa 1 -> Riga 14, Cassa 2 -> Riga 15, Cassa 3 -> Riga 16)
-    const colMap = { ricetteAsl: "C", covid5: "E", esente: "I", iva4: "J", iva10: "K", iva22: "L" };
+    // Excel ricalcolerà le formule all'apertura del file.
+    workbook.calcProperties.fullCalcOnLoad = true;
+    workbook.calcProperties.forceFullCalc = true;
+    workbook.calcProperties.calcMode = "auto";
+
+    // ================================================================
+    // CELLE DEL MODELLO CORRISPETTIVI.xlsx
+    //
+    // B4 = numero farmacia
+    // B5 = data
+    //
+    // Righe 9,10,11 = Cassa 1,2,3
+    // B = IVA 0%
+    // C = IVA 0% COVID
+    // D = IVA 4%
+    // E = IVA 5%
+    // F = IVA 10%
+    // G = IVA 22%
+    // H = TOTALE (formula già presente nel modello)
+    // I = NUMERO SCONTRINI
+    //
+    // Riga 13:
+    // C13 = POS 1
+    // E13 = POS 2
+    // G13 = POS 3
+    // H13 = totale POS
+    //
+    // B18 = Liquidazione ricette Cassa 1
+    // ================================================================
+
+    ws.getCell("B4").value = farmaciaN;
+
+    // Il modello usa una vera data Excel con formato dd/mm/yyyy.
+    const [yyyy, mm, dd] = dataVal.split("-").map(Number);
+    if (yyyy && mm && dd) {
+      ws.getCell("B5").value = new Date(yyyy, mm - 1, dd);
+    } else {
+      ws.getCell("B5").value = new Date();
+    }
+
+    // Mappa SOLO i campi che hanno una colonna nel modello.
+    // ricetteAsl NON viene inserito nella tabella delle aliquote:
+    // il modello prevede una cella separata B18 per la liquidazione ASL.
+    const colMap = {
+      esente: "B",   // IVA 0%
+      covid5: "E",   // IVA 5%
+      iva4: "D",     // IVA 4%
+      iva10: "F",    // IVA 10%
+      iva22: "G"     // IVA 22%
+    };
 
     state.casse.forEach((c, idx) => {
-      const row = 14 + idx;
-      FIELD_ORDER.forEach(k => {
-        const col = colMap[k];
-        if (col) setCell(ws, `${col}${row}`, c.fields[k] || 0, "n");
+      const row = 9 + idx;
+
+      Object.entries(colMap).forEach(([field, col]) => {
+        ws.getCell(`${col}${row}`).value = Number(c.fields[field]) || 0;
       });
-      setCell(ws, `M${row}`, 0, "n", `SUM(C${row}:L${row})`);
-      setCell(ws, `N${row}`, c.docVend || 0, "n");
+
+      // Lasciamo intatta la formula H9/H10/H11 del modello.
+      // Se per qualche motivo mancasse, la ricreiamo senza alterare lo stile.
+      if (!ws.getCell(`H${row}`).value) {
+        ws.getCell(`H${row}`).value = { formula: `SUM(B${row}:G${row})` };
+      }
+
+      ws.getCell(`I${row}`).value = Number(c.docVend) || 0;
     });
 
-    // Mappatura POS per cassa e Liquidazione ASL
-    setCell(ws, "H18", state.casse[0].posTerminale || 0, "n");
-    setCell(ws, "I18", state.casse[1].posTerminale || 0, "n");
-    setCell(ws, "J18", state.casse[2].posTerminale || 0, "n");
-    setCell(ws, "M18", 0, "n", "SUM(H18:L18)");
-
-    setCell(ws, "C23", liquidazioneAsl, "n");
-    setCell(ws, "M19", 0, "n", "M17-M18-C23");
-
-    XLSX.writeFile(wb, `Corrispettivi_${dataVal}.xlsx`);
-  } else {
-    // Generazione da zero
-    const wsData = [];
-    for (let r = 0; r < 24; r++) wsData.push([]);
-
-    wsData[2][6] = "CORRISPETTIVI DEL GIORNO";
-    wsData[8][1] = "FARMACIA N°"; wsData[8][2] = farmaciaN;
-    wsData[9][1] = "DATA"; wsData[9][2] = dataVal;
-
-    const headers = ["", "Ricette ASL", "IVA 0% COVID", "IVA 5% COVID", "IVA 22% EST.", "IVA SERV. 22%", "IVA 0% LIBRI", "IVA 0%", "IVA 4%", "IVA 10%", "IVA 22%", "TOTALE", "doc vend"];
-    headers.forEach((h, i) => { if (h) wsData[12][i + 1] = h; });
-
-    const colIdx = { ricetteAsl: 2, covid5: 4, esente: 8, iva4: 9, iva10: 10, iva22: 11 };
-
-    state.casse.forEach((c, i) => {
-      const row = 13 + i;
-      wsData[row][1] = `CHIUSURA Cassa ${c.n}`;
-      FIELD_ORDER.forEach(k => { wsData[row][colIdx[k]] = c.fields[k] || 0; });
-      wsData[row][12] = { f: `SUM(C${row + 1}:L${row + 1})` };
-      wsData[row][13] = c.docVend || 0;
+    // Riga 12: le formule del modello vengono mantenute.
+    // Le ricreiamo soltanto se assenti.
+    ["B","C","D","E","F","G","H","I"].forEach(col => {
+      const cell = ws.getCell(`${col}12`);
+      if (!cell.value) {
+        cell.value = { formula: `SUM(${col}9:${col}11)` };
+      }
     });
 
-    wsData[16][1] = "TOTALE CORRISPETTIVI";
-    ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"].forEach(col => {
-      wsData[16][XLSX.utils.decode_col(col)] = { f: `SUM(${col}14:${col}16)` };
-    });
+    // POS delle tre casse.
+    ws.getCell("C13").value = Number(state.casse[0].posTerminale) || 0;
+    ws.getCell("E13").value = Number(state.casse[1].posTerminale) || 0;
+    ws.getCell("G13").value = Number(state.casse[2].posTerminale) || 0;
 
-    wsData[17][7] = state.casse[0].posTerminale || 0;
-    wsData[17][8] = state.casse[1].posTerminale || 0;
-    wsData[17][9] = state.casse[2].posTerminale || 0;
-    wsData[17][12] = { f: "SUM(H18:L18)" };
-    wsData[17][13] = "POS";
+    // Totale POS: manteniamo la formula del modello.
+    ws.getCell("H13").value = { formula: "SUM(C13,E13,G13)" };
 
-    wsData[18][7] = "POS1"; wsData[18][8] = "POS2"; wsData[18][9] = "POS3";
-    wsData[18][12] = { f: "M17-M18-C23" };
-    wsData[18][13] = "CONTANTI";
+    // Liquidazione ricette ASL: nel modello è B18.
+    ws.getCell("B18").value = liquidazioneAsl;
 
-    wsData[22][1] = "LIQUIDAZIONE RIC. ASL";
-    wsData[22][2] = liquidazioneAsl;
+    // H14 nel modello è già la formula H12-H13 (versamento contanti).
+    ws.getCell("H14").value = { formula: "H12-H13" };
 
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws["!cols"] = [{ wch: 3 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 10 }, { wch: 9 }];
+    // Scrive un nuovo file senza ricostruire il foglio:
+    // questo è il punto chiave per conservare disposizione e formattazione.
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob(
+      [buffer],
+      { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }
+    );
 
-    const newWb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(newWb, ws, "corrispettivi");
-    XLSX.writeFile(newWb, `Corrispettivi_${dataVal}.xlsx`);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Corrispettivi_${dataVal}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  } catch (err) {
+    console.error("Errore generazione Excel:", err);
+    alert(`Errore nella generazione del file Excel: ${err.message || err}`);
   }
 }
 
