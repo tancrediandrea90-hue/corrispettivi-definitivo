@@ -80,7 +80,8 @@
       <div>
         <label>Modello AI</label>
         <select id="selectedModel">
-          <option value="gemini-2.5-flash" selected>Gemini 2.5 Flash</option>
+          <option value="gemini-1.5-flash" selected>Gemini 1.5 Flash</option>
+          <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
         </select>
       </div>
     </div>
@@ -567,8 +568,6 @@ async function generateExcel() {
   }
 
   try {
-    // Carica il modello originale con ExcelJS, mantenendo formattazione,
-    // larghezze colonne, celle unite, formule e struttura del foglio.
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(customTemplateBuffer);
 
@@ -577,39 +576,12 @@ async function generateExcel() {
       throw new Error("Nel file modello non è presente un foglio utilizzabile.");
     }
 
-    // Excel ricalcolerà le formule all'apertura del file.
     workbook.calcProperties.fullCalcOnLoad = true;
     workbook.calcProperties.forceFullCalc = true;
     workbook.calcProperties.calcMode = "auto";
 
-    // ================================================================
-    // CELLE DEL MODELLO CORRISPETTIVI.xlsx
-    //
-    // B4 = numero farmacia
-    // B5 = data
-    //
-    // Righe 9,10,11 = Cassa 1,2,3
-    // B = IVA 0%
-    // C = IVA 0% COVID
-    // D = IVA 4%
-    // E = IVA 5%
-    // F = IVA 10%
-    // G = IVA 22%
-    // H = TOTALE (formula già presente nel modello)
-    // I = NUMERO SCONTRINI
-    //
-    // Riga 13:
-    // C13 = POS 1
-    // E13 = POS 2
-    // G13 = POS 3
-    // H13 = totale POS
-    //
-    // B18 = Liquidazione ricette Cassa 1
-    // ================================================================
-
     ws.getCell("B4").value = farmaciaN;
 
-    // Il modello usa una vera data Excel con formato dd/mm/yyyy.
     const [yyyy, mm, dd] = dataVal.split("-").map(Number);
     if (yyyy && mm && dd) {
       ws.getCell("B5").value = new Date(yyyy, mm - 1, dd);
@@ -617,15 +589,12 @@ async function generateExcel() {
       ws.getCell("B5").value = new Date();
     }
 
-    // Mappa SOLO i campi che hanno una colonna nel modello.
-    // ricetteAsl NON viene inserito nella tabella delle aliquote:
-    // il modello prevede una cella separata B18 per la liquidazione ASL.
     const colMap = {
-      esente: "B",   // IVA 0%
-      covid5: "E",   // IVA 5%
-      iva4: "D",     // IVA 4%
-      iva10: "F",    // IVA 10%
-      iva22: "G"     // IVA 22%
+      esente: "B",
+      covid5: "E",
+      iva4: "D",
+      iva10: "F",
+      iva22: "G"
     };
 
     state.casse.forEach((c, idx) => {
@@ -635,8 +604,6 @@ async function generateExcel() {
         ws.getCell(`${col}${row}`).value = Number(c.fields[field]) || 0;
       });
 
-      // Lasciamo intatta la formula H9/H10/H11 del modello.
-      // Se per qualche motivo mancasse, la ricreiamo senza alterare lo stile.
       if (!ws.getCell(`H${row}`).value) {
         ws.getCell(`H${row}`).value = { formula: `SUM(B${row}:G${row})` };
       }
@@ -644,8 +611,6 @@ async function generateExcel() {
       ws.getCell(`I${row}`).value = Number(c.docVend) || 0;
     });
 
-    // Riga 12: le formule del modello vengono mantenute.
-    // Le ricreiamo soltanto se assenti.
     ["B","C","D","E","F","G","H","I"].forEach(col => {
       const cell = ws.getCell(`${col}12`);
       if (!cell.value) {
@@ -653,22 +618,14 @@ async function generateExcel() {
       }
     });
 
-    // POS delle tre casse.
     ws.getCell("C13").value = Number(state.casse[0].posTerminale) || 0;
     ws.getCell("E13").value = Number(state.casse[1].posTerminale) || 0;
     ws.getCell("G13").value = Number(state.casse[2].posTerminale) || 0;
 
-    // Totale POS: manteniamo la formula del modello.
     ws.getCell("H13").value = { formula: "SUM(C13,E13,G13)" };
-
-    // Liquidazione ricette ASL: nel modello è B18.
     ws.getCell("B18").value = liquidazioneAsl;
-
-    // H14 nel modello è già la formula H12-H13 (versamento contanti).
     ws.getCell("H14").value = { formula: "H12-H13" };
 
-    // Scrive un nuovo file senza ricostruire il foglio:
-    // questo è il punto chiave per conservare disposizione e formattazione.
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob(
       [buffer],
