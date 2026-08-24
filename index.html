@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Corrispettivi Giornalieri</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
   :root{
     --blue:#1a5cb0; --blue-dark:#0d3d7a; --gray-bg:#f4f6f8; --border:#d7dce1;
@@ -278,15 +278,16 @@ async function pdfFirstPageToBlob(file) {
   return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png"));
 }
 
-function setCell(ws, cellRef, val, type = "n", formula = null) {
-  if (!ws[cellRef]) ws[cellRef] = {};
-  ws[cellRef].t = type;
-  if (formula) {
-    ws[cellRef].f = formula;
-  } else {
-    ws[cellRef].v = val;
-    delete ws[cellRef].f;
-  }
+// Scarica un Blob nel browser con il nome file indicato (equivalente di XLSX.writeFile per ExcelJS)
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 /* ==================== CLOUD VISION (GEMINI API) ==================== */
@@ -606,9 +607,15 @@ document.getElementById("templateFile").addEventListener("change", async e => {
 });
 
 /* ==================== EXPORT EXCEL ====================
-   Scrive SOLO i valori di input; tutte le celle con formula già
-   presenti nel modello (H9:H14, riga 12, H13) NON vengono toccate
-   e si ricalcolano automaticamente all'apertura del file in Excel. */
+   Usa ExcelJS invece di SheetJS: SheetJS (edizione community/gratuita) NON
+   scrive gli stili nel file di output (colori, riempimenti, bordi, font sono
+   una funzionalità a pagamento della sua versione Pro) — è per questo che il
+   file generato in precedenza perdeva la formattazione originale.
+   ExcelJS, gratuito e open source, carica il file .xlsx mantenendo intatti
+   stili/colori/bordi di ogni cella e li preserva quando si modifica solo il
+   valore (.value) di una cella, senza toccarne lo stile (.style/.numFmt).
+   Le celle con formula già presenti nel modello (H9:H14, riga 12, H13)
+   NON vengono toccate e si ricalcolano automaticamente aprendo il file. */
 async function generateExcel() {
   const farmaciaN = document.getElementById("farmaciaN").value || "";
   const dataVal = document.getElementById("dataCorr").value || todayISO();
@@ -616,86 +623,97 @@ async function generateExcel() {
 
   let wb = null;
   if (customTemplateBuffer) {
-    wb = XLSX.read(customTemplateBuffer, { type: "array", cellStyles: true, cellFormulas: true, cellDates: true });
+    wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(customTemplateBuffer);
   }
 
-  if (wb && wb.SheetNames.length > 0) {
-    const sheetName = wb.SheetNames.includes("CORRISPETTIVO") ? "CORRISPETTIVO" : wb.SheetNames[0];
-    const ws = wb.Sheets[sheetName];
+  if (wb && wb.worksheets.length > 0) {
+    const ws = wb.getWorksheet("CORRISPETTIVO") || wb.worksheets[0];
 
-    // Intestazione: B4 = Farmacia N°, B5 = Data
+    // Intestazione: B4 = Farmacia N°, B5 = Data (lo stile della cella resta quello originale)
     const farmNum = Number(farmaciaN);
-    if (farmaciaN.trim() !== "" && !isNaN(farmNum)) {
-      setCell(ws, "B4", farmNum, "n");
-    } else {
-      setCell(ws, "B4", farmaciaN, "s");
-    }
-    setCell(ws, "B5", new Date(dataVal + "T00:00:00"), "d");
+    ws.getCell("B4").value = (farmaciaN.trim() !== "" && !isNaN(farmNum)) ? farmNum : farmaciaN;
+    ws.getCell("B5").value = new Date(dataVal + "T00:00:00");
 
     // Righe casse: Cassa 1 → riga 9, Cassa 2 → riga 10, Cassa 3 → riga 11
     state.casse.forEach((c, idx) => {
       const row = CASSA_ROW[c.n];
       FIELD_ORDER.forEach(k => {
         const col = FIELD_MAP[k].col;
-        setCell(ws, `${col}${row}`, c.fields[k] || 0, "n");
+        ws.getCell(`${col}${row}`).value = c.fields[k] || 0;
       });
       // Colonna I = numero scontrini. Colonna H (TOTALE) è una formula del modello: non si tocca.
-      setCell(ws, `I${row}`, c.docVend || 0, "n");
+      ws.getCell(`I${row}`).value = c.docVend || 0;
     });
 
     // Riga 13: POS 1 (C13) / POS 2 (E13) / POS 3 (G13) — etichette B13/D13/F13 invariate
-    setCell(ws, "C13", state.casse[0].posTerminale || 0, "n");
-    setCell(ws, "E13", state.casse[1].posTerminale || 0, "n");
-    setCell(ws, "G13", state.casse[2].posTerminale || 0, "n");
+    ws.getCell("C13").value = state.casse[0].posTerminale || 0;
+    ws.getCell("E13").value = state.casse[1].posTerminale || 0;
+    ws.getCell("G13").value = state.casse[2].posTerminale || 0;
 
     // B18 = Liquidazione Ricette (Cassa 1) — valore manuale
-    setCell(ws, "B18", liquidazioneAsl, "n");
+    ws.getCell("B18").value = liquidazioneAsl;
 
-    XLSX.writeFile(wb, `Corrispettivi_${dataVal}.xlsx`);
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    downloadBlob(blob, `Corrispettivi_${dataVal}.xlsx`);
   } else {
-    // Fallback (nessun modello disponibile): ricrea da zero la stessa struttura del foglio CORRISPETTIVO
-    const wsData = [];
-    for (let r = 0; r < 20; r++) wsData.push([]);
+    // Fallback (nessun modello disponibile): ricrea da zero la stessa struttura del foglio CORRISPETTIVO,
+    // con una formattazione essenziale (senza i colori/bordi del modello originale, che qui manca).
+    const newWb = new ExcelJS.Workbook();
+    const ws = newWb.addWorksheet("CORRISPETTIVO");
+    ws.columns = [
+      { width: 22 }, { width: 11 }, { width: 13 }, { width: 10 },
+      { width: 10 }, { width: 10 }, { width: 10 }, { width: 11 }, { width: 15 }
+    ];
+    const eur = '"€ "#,##0.00';
 
-    wsData[0][0] = "CORRISPETTIVI DEL GIORNO";
-    wsData[3][0] = "FARMACIA N°"; wsData[3][1] = farmaciaN;
-    wsData[4][0] = "DATA"; wsData[4][1] = dataVal;
+    ws.getCell("A1").value = "CORRISPETTIVI DEL GIORNO";
+    ws.getCell("A1").font = { bold: true };
+    ws.getCell("A4").value = "FARMACIA N°"; ws.getCell("B4").value = farmaciaN;
+    ws.getCell("A5").value = "DATA"; ws.getCell("B5").value = new Date(dataVal + "T00:00:00"); ws.getCell("B5").numFmt = "dd/mm/yyyy";
 
-    wsData[7][1] = "IVA 0%"; wsData[7][2] = "IVA 0% COVID"; wsData[7][3] = "IVA 4%";
-    wsData[7][4] = "IVA 5%"; wsData[7][5] = "IVA 10%"; wsData[7][6] = "IVA 22%";
-    wsData[7][7] = "TOTALE"; wsData[7][8] = "NUMERO SCONTRINI";
+    const headers = ["", "IVA 0%", "IVA 0% COVID", "IVA 4%", "IVA 5%", "IVA 10%", "IVA 22%", "TOTALE", "NUMERO SCONTRINI"];
+    headers.forEach((h, i) => { if (h) { const cell = ws.getCell(8, i + 1); cell.value = h; cell.font = { bold: true }; } });
 
-    const colIdx = { esente: 1, covid: 2, iva4: 3, iva5: 4, iva10: 5, iva22: 6 };
+    const colIdx = { esente: 2, covid: 3, iva4: 4, iva5: 5, iva10: 6, iva22: 7 };
     state.casse.forEach((c, i) => {
-      const row = 8 + i; // riga array 0-based → riga foglio 9,10,11
-      wsData[row][0] = `CHIUSURA CASSA ${c.n}`;
-      FIELD_ORDER.forEach(k => { wsData[row][colIdx[k]] = c.fields[k] || 0; });
-      wsData[row][7] = { f: `SUM(B${row + 1}:G${row + 1})` };
-      wsData[row][8] = c.docVend || 0;
+      const row = 9 + i;
+      ws.getCell(row, 1).value = `CHIUSURA CASSA ${c.n}`;
+      FIELD_ORDER.forEach(k => {
+        const cell = ws.getCell(row, colIdx[k]);
+        cell.value = c.fields[k] || 0;
+        cell.numFmt = eur;
+      });
+      const totCell = ws.getCell(row, 8);
+      totCell.value = { formula: `SUM(B${row}:G${row})` };
+      totCell.numFmt = eur;
+      ws.getCell(row, 9).value = c.docVend || 0;
     });
 
-    wsData[11][0] = "TOTALE CORRISPETTIVI";
-    ["B", "C", "D", "E", "F", "G", "H", "I"].forEach(col => {
-      wsData[11][XLSX.utils.decode_col(col)] = { f: `SUM(${col}9:${col}11)` };
+    ws.getCell("A12").value = "TOTALE CORRISPETTIVI"; ws.getCell("A12").font = { bold: true };
+    ["B", "C", "D", "E", "F", "G", "H"].forEach(col => {
+      const cell = ws.getCell(`${col}12`);
+      cell.value = { formula: `SUM(${col}9:${col}11)` };
+      cell.numFmt = eur;
+      cell.font = { bold: true };
     });
+    ws.getCell("I12").value = { formula: "SUM(I9:I11)" };
 
-    wsData[12][1] = "POS 1"; wsData[12][2] = state.casse[0].posTerminale || 0;
-    wsData[12][3] = "POS 2"; wsData[12][4] = state.casse[1].posTerminale || 0;
-    wsData[12][5] = "POS 3"; wsData[12][6] = state.casse[2].posTerminale || 0;
-    wsData[12][7] = { f: "SUM(C13+E13+G13)" };
+    ws.getCell("B13").value = "POS 1"; ws.getCell("C13").value = state.casse[0].posTerminale || 0; ws.getCell("C13").numFmt = eur;
+    ws.getCell("D13").value = "POS 2"; ws.getCell("E13").value = state.casse[1].posTerminale || 0; ws.getCell("E13").numFmt = eur;
+    ws.getCell("F13").value = "POS 3"; ws.getCell("G13").value = state.casse[2].posTerminale || 0; ws.getCell("G13").numFmt = eur;
+    ws.getCell("H13").value = { formula: "C13+E13+G13" }; ws.getCell("H13").numFmt = eur;
 
-    wsData[13][7] = { f: "H12-H13" };
-    wsData[13][8] = "VERSAMENTO CONTANTI";
+    ws.getCell("H14").value = { formula: "H12-H13" }; ws.getCell("H14").numFmt = eur;
+    ws.getCell("I14").value = "VERSAMENTO CONTANTI";
 
-    wsData[17][0] = "LIQUIDAZIONE RICETTE (CASSA 1)";
-    wsData[17][1] = liquidazioneAsl;
+    ws.getCell("A18").value = "LIQUIDAZIONE RICETTE (CASSA 1)";
+    ws.getCell("B18").value = liquidazioneAsl;
 
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws["!cols"] = [{ wch: 22 }, { wch: 11 }, { wch: 13 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 15 }];
-
-    const newWb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(newWb, ws, "CORRISPETTIVO");
-    XLSX.writeFile(newWb, `Corrispettivi_${dataVal}.xlsx`);
+    const buffer = await newWb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    downloadBlob(blob, `Corrispettivi_${dataVal}.xlsx`);
   }
 }
 
